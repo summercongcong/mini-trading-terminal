@@ -142,9 +142,17 @@ export default function TokenPage() {
         <h1 className="text-2xl md:text-3xl font-bold truncate pr-4">
           {tokenName} {tokenSymbol}
         </h1>
-        <Link to={`/networks/${networkId}`} className="text-sm hover:underline whitespace-nowrap">
-          &lt; Back to Network
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link
+            to={`/trade/${networkId}/${tokenId}`}
+            className="text-sm px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors whitespace-nowrap"
+          >
+            Trade
+          </Link>
+          <Link to={`/networks/${networkId}`} className="text-sm hover:underline whitespace-nowrap">
+            &lt; Back to Network
+          </Link>
+        </div>
       </div>
 
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import NetworkList from "@/components/NetworkList";
 import { getCodexClient } from "@/lib/codex";
+import { ArrowRight } from "lucide-react";
 
 type Network = {
   id: number;
@@ -73,6 +75,15 @@ export default function HomePage() {
           <br />
           Discover, analyze, and track tokens across various networks.
         </p>
+        <div className="flex justify-center mb-6">
+          <Link
+            to="/tokens"
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
+          >
+            Browse All Tokens
+            <ArrowRight className="w-4 h-4" />
+          </Link>
+        </div>
       </div>
 
       <div className="w-full max-w-md mx-auto flex-grow flex flex-col">

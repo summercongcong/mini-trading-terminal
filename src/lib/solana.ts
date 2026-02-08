@@ -99,30 +99,54 @@ export const getTokenBalance = async (
   connection: Connection,
 ): Promise<Decimal> => {
   try {
+    // Validate addresses before creating PublicKey
+    if (!publicKey || !tokenAddress) {
+      console.warn("[getTokenBalance] Missing publicKey or tokenAddress");
+      return new Decimal(0);
+    }
+
+    // Validate address format (basic check)
+    const isValidBase58 = (str: string): boolean => {
+      const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
+      return base58Regex.test(str) && str.length >= 32 && str.length <= 44;
+    };
+
+    if (!isValidBase58(publicKey)) {
+      console.error(`[getTokenBalance] Invalid publicKey format: ${publicKey.substring(0, 20)}...`);
+      return new Decimal(0);
+    }
+
+    if (!isValidBase58(tokenAddress)) {
+      console.error(`[getTokenBalance] Invalid tokenAddress format: ${tokenAddress.substring(0, 20)}...`);
+      return new Decimal(0);
+    }
+
     const mint = new PublicKey(tokenAddress);
     const owner = new PublicKey(publicKey);
 
-    const tokenAccountInfo = await connection.getAccountInfo(mint);
-    if (!tokenAccountInfo) {
-      return new Decimal(0);
-    }
-
+    // Get the associated token account address
+    // This is the standard way to get token account for a wallet and token mint
     const tokenAccountPubkey = getAssociatedTokenAddressSync(
       mint,
       owner,
-      false,
-      tokenAccountInfo.owner,
+      false, // allowOwnerOffCurve is false by default
     );
 
+    console.log(`[getTokenBalance] Token account address: ${tokenAccountPubkey.toBase58()}`);
+
     try {
-      const response =
-        await connection.getTokenAccountBalance(tokenAccountPubkey);
+      const response = await connection.getTokenAccountBalance(tokenAccountPubkey);
       return new Decimal(response.value.amount);
-    } catch (_error) {
+    } catch (error) {
+      // Token account might not exist if balance is 0
+      console.log(`[getTokenBalance] Token account not found or has zero balance`);
       return new Decimal(0);
     }
   } catch (error) {
-    console.error(`Error fetching Solana token balance:`, error);
+    console.error(`[getTokenBalance] Error fetching Solana token balance:`, error);
+    if (error instanceof Error) {
+      console.error(`[getTokenBalance] Error details:`, error.message);
+    }
     return new Decimal(0);
   }
 };

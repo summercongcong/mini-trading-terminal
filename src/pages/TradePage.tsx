@@ -4,10 +4,32 @@ import { Codex } from "@codex-data/sdk";
 import { EnhancedToken } from "@codex-data/sdk/dist/sdk/generated/graphql";
 import { TokenChart, ChartDataPoint } from "@/components/TokenChart";
 import { FloatingTradingPanel } from "@/components/FloatingTradingPanel";
-import { TradingPanelProvider, useTradingPanel } from "@/contexts/TradingPanelContext";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  TradingPanelProvider,
+  useTradingPanel,
+} from "@/contexts/TradingPanelContext";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { ShoppingCart } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const CHART_RESOLUTION = "30";
+const ONE_DAY_IN_SECONDS = 24 * 60 * 60;
+
+interface GraphQLError {
+  response?: {
+    errors?: Array<{
+      message?: string;
+      extensions?: {
+        code?: string;
+      };
+    }>;
+  };
+}
 
 function TradePageContent() {
   const { networkId, token } = useParams<{ networkId: string; token: string }>();
@@ -45,7 +67,7 @@ function TradePageContent() {
       const codexClient = new Codex(apiKey || "");
 
       const now = Math.floor(Date.now() / 1000);
-      const oneDayAgo = now - 1 * 24 * 60 * 60;
+      const oneDayAgo = now - ONE_DAY_IN_SECONDS;
       const symbolId = `${token}:${networkIdNum}`;
 
       try {
@@ -57,83 +79,53 @@ function TradePageContent() {
             symbol: symbolId,
             from: oneDayAgo,
             to: now,
-            resolution: "30",
+            resolution: CHART_RESOLUTION,
           }),
         ]);
 
-        const detailsResult = results[0];
-        const barsResult = results[1];
+        const [detailsResult, barsResult] = results;
 
+        // Process token details
         if (detailsResult.status === "fulfilled") {
           const tokenData = detailsResult.value.token;
           if (tokenData) {
             setDetails(tokenData);
           } else {
-            // Check for GraphQL errors in the response
-            const response = (detailsResult.value as any)?.response;
-            if (response?.errors) {
-              const graphqlError = response.errors[0];
-              if (graphqlError?.extensions?.code === "NOT_FOUND") {
-                setError(`Token not found in Codex database: ${token}. This token may not be indexed yet or the address may be incorrect.`);
-              } else {
-                setError(`Token query failed: ${graphqlError?.message || "Unknown error"}`);
-              }
-            } else {
-              setError(`Token not found: ${token}. Please check the token address.`);
-            }
+            const errorMessage = extractErrorMessage(
+              detailsResult.value as GraphQLError,
+              token
+            );
+            setError(errorMessage);
           }
         } else {
-          const errorReason = detailsResult.reason;
-          console.error("Failed to fetch token details:", errorReason);
-          
-          let errorMessage = "Failed to load token details";
-          
-          // Try to extract GraphQL error from the error object
-          if (errorReason && typeof errorReason === "object") {
-            const response = (errorReason as any)?.response;
-            if (response?.errors && Array.isArray(response.errors) && response.errors.length > 0) {
-              const graphqlError = response.errors[0];
-              if (graphqlError?.extensions?.code === "NOT_FOUND") {
-                errorMessage = `Token not found in Codex database: ${token}. This token may not be indexed yet or the address may be incorrect.`;
-              } else {
-                errorMessage = `API Error: ${graphqlError?.message || "Unknown error"}`;
-              }
-            } else if (errorReason instanceof Error) {
-              errorMessage = `Failed to load token details: ${errorReason.message}`;
-            }
-          } else if (errorReason instanceof Error) {
-            errorMessage = `Failed to load token details: ${errorReason.message}`;
-          } else if (typeof errorReason === "string") {
-            errorMessage = `Failed to load token details: ${errorReason}`;
-          }
-          
-          // Check if API key is missing
-          if (!apiKey) {
-            errorMessage = "VITE_CODEX_API_KEY is not set. Please configure it in your .env file.";
-          }
-          
+          const errorMessage = extractErrorMessage(
+            detailsResult.reason as GraphQLError,
+            token,
+            apiKey
+          );
           setError(errorMessage);
         }
 
+        // Process chart data
         if (barsResult.status === "fulfilled") {
-          const b = barsResult.value.getBars;
-          if (b?.t && b?.c) {
-            const chartData = b.t.map((time: number, index: number) => ({
-              time: time,
-              open: b.o?.[index],
-              high: b.h?.[index],
-              low: b.l?.[index],
-              close: b.c?.[index],
+          const barsData = barsResult.value.getBars;
+          if (barsData?.t && barsData?.c) {
+            const chartData = barsData.t.map((time: number, index: number) => ({
+              time,
+              open: barsData.o?.[index],
+              high: barsData.h?.[index],
+              low: barsData.l?.[index],
+              close: barsData.c?.[index],
             }));
             setBars(chartData);
           }
-        } else if (barsResult.status === "rejected") {
+        } else {
           console.warn("Failed to fetch chart data:", barsResult.reason);
-          // Don't set error for chart data failure, just log it
         }
       } catch (err) {
         console.error("Error fetching token data:", err);
-        const errorMessage = err instanceof Error ? err.message : "Failed to load token data";
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to load token data";
         setError(`Error: ${errorMessage}`);
       } finally {
         setLoading(false);
@@ -142,6 +134,43 @@ function TradePageContent() {
 
     fetchData();
   }, [token, networkId]);
+
+  // Helper function to extract error messages
+  const extractErrorMessage = (
+    errorData: GraphQLError | Error | string | unknown,
+    tokenAddress: string,
+    apiKey?: string
+  ): string => {
+    // Check if API key is missing
+    if (!apiKey) {
+      return "VITE_CODEX_API_KEY is not set. Please configure it in your .env file.";
+    }
+
+    // Handle GraphQL errors
+    if (errorData && typeof errorData === "object" && "response" in errorData) {
+      const response = (errorData as GraphQLError).response;
+      if (response?.errors && Array.isArray(response.errors) && response.errors.length > 0) {
+        const graphqlError = response.errors[0];
+        if (graphqlError?.extensions?.code === "NOT_FOUND") {
+          return `Token not found in Codex database: ${tokenAddress}. This token may not be indexed yet or the address may be incorrect.`;
+        }
+        return `API Error: ${graphqlError?.message || "Unknown error"}`;
+      }
+    }
+
+    // Handle Error objects
+    if (errorData instanceof Error) {
+      return `Failed to load token details: ${errorData.message}`;
+    }
+
+    // Handle string errors
+    if (typeof errorData === "string") {
+      return `Failed to load token details: ${errorData}`;
+    }
+
+    // Default error
+    return `Token not found: ${tokenAddress}. Please check the token address.`;
+  };
 
   if (loading) {
     return (
@@ -159,20 +188,39 @@ function TradePageContent() {
           <div className="text-sm text-muted-foreground space-y-2">
             <p>可能的解决方案：</p>
             <ul className="list-disc list-inside space-y-1 text-left">
-              <li>检查 <code className="bg-muted px-1 rounded">VITE_CODEX_API_KEY</code> 是否在 .env 文件中正确配置</li>
-              <li>确认代币地址格式正确（Solana 地址通常是 32-44 个字符的 base58 编码）</li>
-              <li>该代币可能尚未被 Codex 索引，尝试使用其他代币地址</li>
-              <li>可以从首页导航到已知的代币（如从网络页面选择代币）</li>
+              <li>
+                检查{" "}
+                <code className="bg-muted px-1 rounded">
+                  VITE_CODEX_API_KEY
+                </code>{" "}
+                是否在 .env 文件中正确配置
+              </li>
+              <li>
+                确认代币地址格式正确（Solana 地址通常是 32-44 个字符的 base58
+                编码）
+              </li>
+              <li>
+                该代币可能尚未被 Codex 索引，尝试使用其他代币地址
+              </li>
+              <li>
+                可以从首页导航到已知的代币（如从网络页面选择代币）
+              </li>
               <li>检查网络连接和 API 服务状态</li>
               <li>查看浏览器控制台获取更多错误详情</li>
             </ul>
             {token && networkId && (
               <div className="mt-4 space-y-1">
                 <p>
-                  网络 ID: <code className="bg-muted px-1 rounded font-mono text-xs">{networkId}</code>
+                  网络 ID:{" "}
+                  <code className="bg-muted px-1 rounded font-mono text-xs">
+                    {networkId}
+                  </code>
                 </p>
                 <p>
-                  代币地址: <code className="bg-muted px-1 rounded font-mono text-xs">{token}</code>
+                  代币地址:{" "}
+                  <code className="bg-muted px-1 rounded font-mono text-xs">
+                    {token}
+                  </code>
                 </p>
               </div>
             )}

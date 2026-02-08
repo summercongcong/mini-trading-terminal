@@ -1,11 +1,29 @@
-import { Codex } from "@codex-data/sdk";
-import { Link, useParams } from "react-router-dom";
 import { useEffect, useState, Suspense } from "react";
+import { Link, useParams } from "react-router-dom";
+import { Codex } from "@codex-data/sdk";
+import {
+  EnhancedToken,
+  PairFilterResult,
+  PairRankingAttribute,
+  RankingDirection,
+} from "@codex-data/sdk/dist/sdk/generated/graphql";
 import { TokenChart, ChartDataPoint } from "@/components/TokenChart";
 import { TradingPanel } from "@/components/TradingPanel";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EnhancedToken, PairFilterResult, PairRankingAttribute, RankingDirection } from "@codex-data/sdk/dist/sdk/generated/graphql";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 type TokenEvent = {
   id: string;
@@ -16,9 +34,14 @@ type TokenEvent = {
   uniqueId?: string;
 };
 
+const EVENTS_LIMIT = 50;
+const PAIRS_LIMIT = 50;
+const CHART_RESOLUTION = "30";
+const ONE_DAY_IN_SECONDS = 24 * 60 * 60;
+
 export default function TokenPage() {
   const { networkId, tokenId } = useParams<{ networkId: string; tokenId: string }>();
-  const networkIdNum = parseInt(networkId || '', 10);
+  const networkIdNum = parseInt(networkId || "", 10);
 
   const [details, setDetails] = useState<EnhancedToken | undefined>(undefined);
   const [pairs, setPairs] = useState<PairFilterResult[]>([]);
@@ -39,56 +62,81 @@ export default function TokenPage() {
       if (!apiKey) {
         console.warn("VITE_CODEX_API_KEY not set.");
       }
-      const codexClient = new Codex(apiKey || '');
+      const codexClient = new Codex(apiKey || "");
 
       const now = Math.floor(Date.now() / 1000);
-      const oneDayAgo = now - 1 * 24 * 60 * 60;
+      const oneDayAgo = now - ONE_DAY_IN_SECONDS;
       const symbolId = `${tokenId}:${networkIdNum}`;
 
       try {
         const results = await Promise.allSettled([
-          codexClient.queries.token({ input: { networkId: networkIdNum, address: tokenId } }),
+          codexClient.queries.token({
+            input: { networkId: networkIdNum, address: tokenId },
+          }),
           codexClient.queries.getBars({
             symbol: symbolId,
             from: oneDayAgo,
             to: now,
-            resolution: '30'
+            resolution: CHART_RESOLUTION,
           }),
-          codexClient.queries.getTokenEvents({ query: { networkId: networkIdNum, address: tokenId }, limit: 50 }),
-          codexClient.queries.filterPairs({ filters: { tokenAddress: [tokenId] }, rankings: [{ attribute: PairRankingAttribute.VolumeUsd24, direction: RankingDirection.Desc }], limit: 50 }),
+          codexClient.queries.getTokenEvents({
+            query: { networkId: networkIdNum, address: tokenId },
+            limit: EVENTS_LIMIT,
+          }),
+          codexClient.queries.filterPairs({
+            filters: { tokenAddress: [tokenId] },
+            rankings: [
+              {
+                attribute: PairRankingAttribute.VolumeUsd24,
+                direction: RankingDirection.Desc,
+              },
+            ],
+            limit: PAIRS_LIMIT,
+          }),
         ]);
 
-        const detailsResult = results[0];
-        const barsResult = results[1];
-        const eventsResult = results[2];
-        const pairsResult = results[3];
+        const [detailsResult, barsResult, eventsResult, pairsResult] = results;
 
-        if (detailsResult.status === 'fulfilled') {
+        // Process token details
+        if (detailsResult.status === "fulfilled") {
           setDetails(detailsResult.value.token);
-        }
-
-        if (barsResult.status === 'fulfilled') {
-          const b = barsResult.value.getBars;
-          if (b?.t && b?.c) {
-            const chartData = b.t.map((time: number, index: number) => ({
-              time: time,
-              open: b.o?.[index],
-              high: b.h?.[index],
-              low: b.l?.[index],
-              close: b.c?.[index],
-            }));
-            setBars(chartData);
+        } else {
+          console.error("Failed to fetch token details:", detailsResult.reason);
+          if (!error) {
+            setError("Failed to load token details");
           }
         }
 
-        if (eventsResult.status === 'fulfilled' && eventsResult.value.getTokenEvents?.items) {
+        // Process chart data
+        if (barsResult.status === "fulfilled") {
+          const barsData = barsResult.value.getBars;
+          if (barsData?.t && barsData?.c) {
+            const chartData = barsData.t.map((time: number, index: number) => ({
+              time,
+              open: barsData.o?.[index],
+              high: barsData.h?.[index],
+              low: barsData.l?.[index],
+              close: barsData.c?.[index],
+            }));
+            setBars(chartData);
+          }
+        } else {
+          console.warn("Failed to fetch chart data:", barsResult.reason);
+        }
+
+        // Process token events
+        if (eventsResult.status === "fulfilled" && eventsResult.value.getTokenEvents?.items) {
+          const tokenDecimals = detailsResult.status === "fulfilled" && detailsResult.value.token?.decimals
+            ? detailsResult.value.token.decimals
+            : 18;
+
           const tokenEvents = eventsResult.value.getTokenEvents.items
-            .filter(ev => ev != null)
+            .filter((ev) => ev != null)
             .map((ev, index) => {
-              const decimals = details?.decimals ?? 18;
-              const swapValue = parseFloat(ev.token0SwapValueUsd || '0');
-              const amount0 = parseFloat(ev.data?.amount0 || '0');
-              const calculatedAmountUsd = swapValue * Math.abs(amount0 / (10 ** decimals));
+              const swapValue = parseFloat(ev.token0SwapValueUsd || "0");
+              const amount0 = parseFloat(ev.data?.amount0 || "0");
+              const calculatedAmountUsd =
+                swapValue * Math.abs(amount0 / 10 ** tokenDecimals);
 
               return {
                 id: ev.id,
@@ -100,10 +148,18 @@ export default function TokenPage() {
               };
             });
           setEvents(tokenEvents);
+        } else if (eventsResult.status === "rejected") {
+          console.warn("Failed to fetch token events:", eventsResult.reason);
         }
 
-        if (pairsResult.status === 'fulfilled' && pairsResult.value.filterPairs?.results) {
-          setPairs(pairsResult.value.filterPairs.results.filter(pair => pair != null) as PairFilterResult[]);
+        // Process pairs
+        if (pairsResult.status === "fulfilled" && pairsResult.value.filterPairs?.results) {
+          const filteredPairs = pairsResult.value.filterPairs.results.filter(
+            (pair) => pair != null
+          ) as PairFilterResult[];
+          setPairs(filteredPairs);
+        } else if (pairsResult.status === "rejected") {
+          console.warn("Failed to fetch pairs:", pairsResult.reason);
         }
       } catch (err) {
         console.error("Error fetching token data:", err);
@@ -114,7 +170,7 @@ export default function TokenPage() {
     };
 
     fetchData();
-  }, [networkIdNum, tokenId, details?.decimals]);
+  }, [networkIdNum, tokenId]);
 
   if (loading) {
     return (
@@ -128,13 +184,15 @@ export default function TokenPage() {
     return (
       <main className="flex min-h-screen flex-col items-center p-12 md:p-24">
         <h1 className="text-2xl font-bold text-destructive">{error}</h1>
-        <Link to="/" className="mt-4 hover:underline">Go back home</Link>
+        <Link to="/" className="mt-4 hover:underline">
+          Go back home
+        </Link>
       </main>
     );
   }
 
   const tokenName = details?.name || tokenId;
-  const tokenSymbol = details?.symbol ? `(${details.symbol})` : '';
+  const tokenSymbol = details?.symbol ? `(${details.symbol})` : "";
 
   return (
     <main className="flex min-h-screen flex-col items-center p-6 md:p-12 space-y-6">
@@ -149,7 +207,10 @@ export default function TokenPage() {
           >
             Trade
           </Link>
-          <Link to={`/networks/${networkId}`} className="text-sm hover:underline whitespace-nowrap">
+          <Link
+            to={`/networks/${networkId}`}
+            className="text-sm hover:underline whitespace-nowrap"
+          >
             &lt; Back to Network
           </Link>
         </div>
@@ -157,8 +218,22 @@ export default function TokenPage() {
 
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
-          <Suspense fallback={<Card><CardHeader><CardTitle>Price Chart</CardTitle></CardHeader><CardContent><p>Loading chart...</p></CardContent></Card>}>
-            <TokenChart data={bars} title={`${tokenSymbol || 'Token'} Price Chart`} />
+          <Suspense
+            fallback={
+              <Card>
+                <CardHeader>
+                  <CardTitle>Price Chart</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p>Loading chart...</p>
+                </CardContent>
+              </Card>
+            }
+          >
+            <TokenChart
+              data={bars}
+              title={`${tokenSymbol || "Token"} Price Chart`}
+            />
           </Suspense>
 
           <Card>
@@ -179,48 +254,58 @@ export default function TokenPage() {
                   <TableBody>
                     {events.map((event) => (
                       <TableRow key={event.uniqueId || event.id}>
-                        <TableCell>{event.eventDisplayType || 'N/A'}</TableCell>
-                        <TableCell>{new Date(event.timestamp * 1000).toLocaleString()}</TableCell>
-                        <TableCell>{event.amountUsd ? `$${event.amountUsd.toFixed(2)}` : 'N/A'}</TableCell>
+                        <TableCell>
+                          {event.eventDisplayType || "N/A"}
+                        </TableCell>
+                        <TableCell>
+                          {new Date(event.timestamp * 1000).toLocaleString()}
+                        </TableCell>
+                        <TableCell>
+                          {event.amountUsd
+                            ? `$${event.amountUsd.toFixed(2)}`
+                            : "N/A"}
+                        </TableCell>
                         <TableCell className="truncate">
-                          <span title={event.transactionHash}>{event.transactionHash.substring(0, 8)}...</span>
+                          <span title={event.transactionHash}>
+                            {event.transactionHash.substring(0, 8)}...
+                          </span>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
               ) : (
-                <p className="text-muted-foreground">No recent transaction data available.</p>
+                <p className="text-muted-foreground">
+                  No recent transaction data available.
+                </p>
               )}
             </CardContent>
           </Card>
         </div>
 
         <div className="lg:col-span-1 space-y-6">
-          {details && (
-            <TradingPanel
-              token={details}
-            />
-          )}
+          {details && <TradingPanel token={details} />}
 
           <Card>
             <CardHeader className="flex flex-row items-center space-x-4">
               {details?.info?.imageThumbUrl ? (
                 <img
                   src={details.info.imageThumbUrl}
-                  alt={`${details.name || 'Token'} icon`}
+                  alt={`${details.name || "Token"} icon`}
                   width={40}
                   height={40}
                   className="rounded-full"
                 />
               ) : (
                 <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-lg font-semibold">
-                  {details?.symbol ? details.symbol[0] : 'T'}
+                  {details?.symbol ? details.symbol[0] : "T"}
                 </div>
               )}
               <div>
                 <CardTitle>Information</CardTitle>
-                {details?.symbol && <CardDescription>{details.symbol}</CardDescription>}
+                {details?.symbol && (
+                  <CardDescription>{details.symbol}</CardDescription>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-2">
@@ -228,16 +313,26 @@ export default function TokenPage() {
                 <>
                   <p className="text-sm">
                     <strong className="text-muted-foreground">Address:</strong>
-                    <span className="font-mono block break-all" title={details.address}>{details.address}</span>
+                    <span
+                      className="font-mono block break-all"
+                      title={details.address}
+                    >
+                      {details.address}
+                    </span>
                   </p>
                   {details.info?.description && (
                     <p className="text-sm">
-                      <strong className="text-muted-foreground">Description:</strong> {details.info?.description}
+                      <strong className="text-muted-foreground">
+                        Description:
+                      </strong>{" "}
+                      {details.info.description}
                     </p>
                   )}
                 </>
               ) : (
-                <p className="text-muted-foreground">Token details could not be loaded.</p>
+                <p className="text-muted-foreground">
+                  Token details could not be loaded.
+                </p>
               )}
             </CardContent>
           </Card>
@@ -247,23 +342,35 @@ export default function TokenPage() {
               <CardTitle>Pools</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {pairs ? (
+              {pairs.length > 0 ? (
                 <div className="space-y-2">
-                  {pairs
-                    .map((pair) => (
-                      <div className="text-sm" key={pair.pair?.id ?? Math.random().toString(36).substring(2, 15)}>
-                        <div className="flex justify-between items-start">
-                          <strong className="text-muted-foreground">{pair.exchange?.name || 'Unknown Exchange'}</strong>
-                          <span className="text-xs text-muted-foreground">
-                            24h Volume: ${parseFloat(pair.volumeUSD24 || '0').toLocaleString()}
-                          </span>
-                        </div>
-                        <span className="font-mono block break-all" title={pair.pair?.address || ''}>{pair.pair?.address || ''}</span>
+                  {pairs.map((pair) => (
+                    <div
+                      className="text-sm"
+                      key={pair.pair?.id ?? `pair-${pair.exchange?.name || Math.random()}`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <strong className="text-muted-foreground">
+                          {pair.exchange?.name || "Unknown Exchange"}
+                        </strong>
+                        <span className="text-xs text-muted-foreground">
+                          24h Volume: $
+                          {parseFloat(pair.volumeUSD24 || "0").toLocaleString()}
+                        </span>
                       </div>
-                    ))}
+                      <span
+                        className="font-mono block break-all"
+                        title={pair.pair?.address || ""}
+                      >
+                        {pair.pair?.address || ""}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               ) : (
-                <p className="text-muted-foreground">Token details could not be loaded.</p>
+                <p className="text-muted-foreground">
+                  No pool data available.
+                </p>
               )}
             </CardContent>
           </Card>
